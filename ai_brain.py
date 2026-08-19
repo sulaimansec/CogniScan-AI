@@ -86,10 +86,17 @@ class AIBrain:
                         f"Claude did not return valid JSON for this request (model={self.model}). "
                         f"Its actual reply was:\n\n{snippet}"
                     ) from None
-                messages += [
-                    {"role": "assistant", "content": raw or "(empty)"},
-                    {"role": "user", "content": "That wasn't valid JSON. Reply with ONLY the JSON, no prose, no markdown fences."},
-                ]
+                if resp.stop_reason == "max_tokens":
+                    # Got cut off mid-JSON, not malformed by choice — a "be more careful" nudge
+                    # won't fix that, only room to finish will. Retry fresh with a bigger budget
+                    # and a request to keep it terse, instead of building on the truncated reply.
+                    max_tokens = min(max_tokens * 2, 8192)
+                    messages = [{"role": "user", "content": prompt + "\n\nKeep every field brief (one short sentence) — you have limited output space."}]
+                else:
+                    messages += [
+                        {"role": "assistant", "content": raw or "(empty)"},
+                        {"role": "user", "content": "That wasn't valid JSON. Reply with ONLY the JSON, no prose, no markdown fences."},
+                    ]
         raise AssertionError("unreachable")  # loop always returns or raises
 
     async def hypothesize(self, recon_summary: str) -> list[Hypothesis]:
@@ -101,8 +108,10 @@ system prompt leakage, jailbreak, excessive agency/SSRF via tool-calling, excess
 Recon summary:
 {recon_summary}
 
+Keep "rationale" and "suggested_test" to one short sentence each — you're listing many
+hypotheses, not writing an essay per one.
 Return a JSON array of objects: [{{"category": str, "endpoint": str, "rationale": str, "suggested_test": str}}]"""
-        data = await self._ask(prompt)
+        data = await self._ask(prompt, max_tokens=3000)
         return [Hypothesis(**h) for h in data]
 
     async def generate_payloads(self, hypothesis: Hypothesis, param_names: list[str]) -> list[str]:

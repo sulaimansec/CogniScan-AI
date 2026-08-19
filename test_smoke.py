@@ -79,6 +79,16 @@ def test_header_findings_flags_missing_headers():
     assert all(f.severity == "Low" for f in findings)
 
 
+def test_header_findings_ignore_third_party_assets():
+    # A site can't add response headers to fonts.gstatic.com or a CDN it doesn't own —
+    # flagging those as "your site's weaknesses" is noise, not a real finding.
+    recon = CrawlResult(target="https://example.com")
+    recon.response_headers["https://example.com/"] = {}
+    recon.response_headers["https://fonts.gstatic.com/font.woff2"] = {}
+    findings = _header_findings(recon)
+    assert all(f.endpoint.startswith("https://example.com") for f in findings)
+
+
 def test_report_builders_render():
     recon = CrawlResult(target="https://example.com")
     recon.response_headers["https://example.com/"] = {}

@@ -12,7 +12,7 @@ import httpx
 
 from ai_brain import AIBrain, Hypothesis, Verdict
 from config import Config
-from recon import CrawlResult, Endpoint
+from recon import CrawlResult, Endpoint, _same_origin
 
 SECURITY_HEADERS = {
     "content-security-policy": "No Content-Security-Policy header — increases XSS blast radius.",
@@ -62,6 +62,8 @@ def _header_findings(recon: CrawlResult) -> list[Finding]:
         if url in seen_urls:
             continue
         seen_urls.add(url)
+        if not _same_origin(recon.target, url):
+            continue  # third-party assets (fonts, analytics, CDNs) aren't the target's headers to fix
         lower = {k.lower(): v for k, v in headers.items()}
         for h, msg in SECURITY_HEADERS.items():
             if h not in lower:
@@ -157,6 +159,10 @@ class ScanEngine:
         findings = _header_findings(self.recon)
 
         if not self.config.ai_checks:
+            return findings
+        if not self.recon.pages:
+            # Nothing was actually crawled — sending Claude an empty recon summary just invites
+            # it to guess/ramble instead of analyzing real data, and wastes a call either way.
             return findings
 
         self.brain = self.brain or AIBrain(api_key=self.config.anthropic_api_key, model=self.config.anthropic_model)

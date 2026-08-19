@@ -67,7 +67,15 @@ async def crawl(target: str, depth: int, user_agent: str, timeout: float) -> Cra
             seen.add(url)
 
             try:
-                await page.goto(url, timeout=timeout * 1000, wait_until="networkidle")
+                # "networkidle" alone is fragile: any site with polling/analytics/chat-widget
+                # traffic never goes idle and the whole page load times out for no real reason.
+                # domcontentloaded is what actually matters for scraping; networkidle after that
+                # is just a best-effort settle window, not something a page load should fail on.
+                await page.goto(url, timeout=timeout * 1000, wait_until="domcontentloaded")
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=3000)
+                except Exception:
+                    pass
             except Exception as exc:
                 result.failed_pages[url] = str(exc).splitlines()[0]  # first line only, keep it short
                 continue
