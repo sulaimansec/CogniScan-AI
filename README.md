@@ -90,6 +90,20 @@ Severity breakdown: Low=4
 
 No exploitable vulnerabilities — the Claude-driven probes ran and returned no verified findings above these header gaps. This is the expected shape of output for a well-run, low-attack-surface site: a short, honest, non-inflated list, not 50 duplicate rows for the same issue.
 
+### Real-world validation: my own live sites
+
+Beyond the generic example above, the tool has been run for real — repeatedly, over multiple days — against two of my own live production sites (published with the owner's explicit go-ahead):
+
+**[atsify.net](https://atsify.net)** — ATS Resume Builder SaaS (Next.js 16, live production app)
+- **Grade: A** — 0 findings (7 pages crawled, depth 3)
+- Earlier in development, the very first scan flagged a sitewide missing Content-Security-Policy header (Low, CVSS 3.1) — the only issue found. Fixed directly in the app's own response headers; every re-scan since comes back clean.
+
+**[iamsulaiman.dev](https://iamsulaiman.dev)** — personal site (Cloudflare-fronted)
+- **Grade: B** — 2 Low findings (CVSS 3.1 each): missing Content-Security-Policy and Strict-Transport-Security — specifically on a Cloudflare-auto-injected script path (`/cdn-cgi/scripts/.../email-decode.min.js`), not the main page (which already has clean headers).
+- Note: this site sits behind Cloudflare bot management, which intermittently resets/times out headless-browser connections — confirmed by testing: identical requests via `curl` always succeed instantly, while Playwright's Chromium fails roughly half the time regardless of what User-Agent it sends. That's a real limitation of *any* headless-browser-based scanner against a bot-protected target, not a CogniScan bug — retrying usually gets through, which is exactly what the crawler's per-page error handling and warnings are built to make visible rather than hide.
+
+In both cases, Claude's AI-driven probing (hypothesis generation → payload testing → verdict) ran on top of the header checks and found nothing exploitable beyond what's listed above.
+
 ### Install & run
 
 ```bash
@@ -172,6 +186,20 @@ Useful flags: `--depth`, `--no-ai-checks` (header checks only, free/instant), `-
 ```
 
 ولا ثغرة قابلة للاستغلال — فحوصات Claude اشتغلت وما لقت شي فوق هالهيدرز الناقصة. هذا الشكل المتوقع لموقع سطح هجومه صغير ومُدار كويس: قائمة قصيرة وصادقة، مو 50 سطر مكرر لنفس المشكلة.
+
+### فحص حقيقي على مواقعي الشخصية
+
+بعد المثال العام فوق، شغّلت الأداة فعليًا وبشكل متكرر — على مدار أكثر من يوم — على موقعين حقيقيين لي بالإنتاج (منشورة بموافقة صريحة من صاحب المواقع):
+
+**[atsify.net](https://atsify.net)** — منصة ATS Resume Builder (Next.js 16، تطبيق حقيقي شغّال)
+- **الدرجة: A** — 0 findings (7 صفحات، عمق 3)
+- أول فحص بمرحلة التطوير كشف Content-Security-Policy ناقص على كل الموقع (منخفض، CVSS 3.1) — المشكلة الوحيدة اللي طلعت. صلحتها مباشرة بهيدرز التطبيق، وكل فحص بعدها يطلع نظيف.
+
+**[iamsulaiman.dev](https://iamsulaiman.dev)** — موقعي الشخصي (خلف Cloudflare)
+- **الدرجة: B** — مشكلتين منخفضتين (CVSS 3.1 لكل وحدة): CSP و HSTS ناقصين — تحديدًا على مسار سكربت يحقنه Cloudflare نفسه (`/cdn-cgi/scripts/.../email-decode.min.js`)، مو الصفحة الرئيسية (اللي هيدرزها نظيفة أصلاً).
+- ملاحظة: هذا الموقع خلف حماية Cloudflare ضد البوتات، اللي أحيانًا توقف اتصال المتصفح الآلي — تأكدت بالاختبار: نفس الطلب عبر `curl` ينجح فورًا كل مرة، لكن Chromium الآلي (Playwright) يفشل تقريبًا نص المرات بغض النظر عن الـ User-Agent المُرسل. هذا قيد حقيقي بأي أداة فحص تعتمد على متصفح آلي ضد هدف محمي ببوت-بروتكشن، مو خلل بـ CogniScan — إعادة المحاولة غالبًا تنجح، وهذا بالضبط اللي معالجة الأخطاء وتحذيرات الزحف مبنية توضحه بدل ما تخفيه.
+
+بالحالتين، فحوصات Claude الذكية (توليد فرضيات → اختبار payloads → حكم) اشتغلت فوق فحوصات الهيدرز وما لقت شي قابل للاستغلال غير المذكور فوق.
 
 ### التثبيت والتشغيل
 
