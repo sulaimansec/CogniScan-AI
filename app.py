@@ -5,7 +5,7 @@ import asyncio
 import csv
 import io
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
@@ -36,8 +36,10 @@ PRESETS = {
 
 
 def _fmt_ts(ts: str) -> str:
+    # Local time with UTC offset, e.g. "2026-08-19T03:52:13+0300" — stored this way since
+    # v2 (scans made before that are UTC/"Z"-suffixed and fall through to the raw string below).
     try:
-        return datetime.strptime(ts, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        return datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S%z").strftime("%Y-%m-%d %H:%M:%S (%z)")
     except ValueError:
         return ts
 

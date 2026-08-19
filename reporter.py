@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import html as _html
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 from scanner import Finding
@@ -49,7 +49,7 @@ def build_markdown(target: str, findings: list[Finding]) -> str:
     verified = [f for f in findings if f.severity != "Info"]
     strengths = [f for f in findings if f.severity == "Info" and not f.payload]
     grade, grade_note = compute_grade(findings)
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    now = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M (%z)")
     grouped = _group(findings)
     grouped_verified = [(f, eps) for f, eps in grouped if f.severity != "Info"]
     sev_counts = Counter(f.severity for f in findings)
@@ -102,7 +102,7 @@ def build_markdown(target: str, findings: list[Finding]) -> str:
 def build_html(target: str, findings: list[Finding]) -> str:
     findings = _sorted(findings)
     grade, grade_note = compute_grade(findings)
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    now = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M (%z)")
     grouped = _group(findings)
     grade_color = {"A": "#16a34a", "B": "#1d4ed8", "C": "#b45309", "D": "#b91c1c", "F": "#7f1d1d"}[grade]
 

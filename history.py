@@ -6,7 +6,7 @@ import re
 import uuid
 from collections import defaultdict
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 from reporter import compute_grade
@@ -20,11 +20,11 @@ def _slug(target: str) -> str:
 def save_scan(target: str, findings: list[Finding], history_dir: Path) -> Path:
     history_dir.mkdir(parents=True, exist_ok=True)
     grade, _ = compute_grade(findings)
-    now = datetime.now(timezone.utc)
-    ts = now.strftime("%Y%m%dT%H%M%SZ")
+    now = datetime.now().astimezone()  # local time — UTC in a report the user reads locally was just confusing
+    ts = now.strftime("%Y-%m-%dT%H:%M:%S%z")
     # Sort key needs finer-than-1-second resolution: two scans saved in the same second would
     # otherwise sort by the random suffix, not save order, silently swapping "before"/"after".
-    sort_key = now.strftime("%Y%m%dT%H%M%S%fZ")
+    sort_key = now.strftime("%Y%m%dT%H%M%S%f")
     path = history_dir / f"{sort_key}_{uuid.uuid4().hex[:6]}_{_slug(target)}.json"
     path.write_text(
         json.dumps({"target": target, "timestamp": ts, "grade": grade, "findings": [asdict(f) for f in findings]}, indent=2),
