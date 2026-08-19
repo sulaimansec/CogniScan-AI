@@ -1,94 +1,204 @@
-# CogniScan AI
+# 🛡️ CogniScan AI
 
-Claude-driven, non-destructive web app + LLM-widget vulnerability scanner.
-**Only use against targets you are authorized to test.**
+**Claude-driven, non-destructive web application & LLM-widget vulnerability scanner.**
+Autonomous recon → AI-generated attack hypotheses → safe payload testing → graded, before/after-comparable reports. Interactive CLI and a Streamlit dashboard, both wired to the same engine.
 
-## Setup
+> ⚠️ **Only scan targets you are explicitly authorized to test.** The tool refuses to run without `--confirm-scope` / the dashboard's authorization checkbox, and defaults to non-destructive HTTP methods only.
+
+---
+
+## Table of contents
+- [English](#english)
+  - [What it does](#what-it-does)
+  - [Architecture](#architecture)
+  - [Project stats](#project-stats)
+  - [Real bugs found & fixed during development](#real-bugs-found--fixed-during-development)
+  - [Example scan output](#example-scan-output)
+  - [Install & run](#install--run)
+  - [Safety design](#safety-design)
+- [العربية](#العربية)
+
+---
+
+## English
+
+### What it does
+
+1. **Recon** — Playwright crawls the target (configurable depth), collecting pages, forms/params, cookies, response headers, third-party scripts, and fingerprints of embedded AI/chat widgets.
+2. **AI-driven hypotheses** — the recon summary goes to Claude, which proposes up to 12 attack hypotheses covering OWASP Top 10, business-logic flaws (IDOR, race conditions, workflow bypass), and — when a chat widget is detected — OWASP Top 10 for LLM Applications (prompt injection, system-prompt leakage, jailbreak, excessive agency/SSRF, excessive disclosure).
+3. **Safe probing** — Claude generates non-destructive payloads per hypothesis (reflection/timing/benign-marker based, never data-mutating), fired over `httpx` with concurrency + rate limiting, restricted to `GET`/`POST`/`HEAD`/`OPTIONS` unless unsafe methods are explicitly opted into.
+4. **Analysis** — each probe's response goes back to Claude for a verdict: vulnerable or not, severity, CVSS, evidence, remediation.
+5. **Deterministic checks** — missing security headers (CSP, X-Frame-Options, HSTS, X-Content-Type-Options) are checked without any model call, and only on the target's own origin (third-party CDNs/fonts/analytics are never blamed on the site being scanned).
+6. **Reporting** — Markdown + self-contained dark-mode HTML report: overall letter grade (A–F, driven by the single worst severity found, not an average), grouped findings (one entry per issue type across however many endpoints it hits, not 50 duplicate rows), PoCs, remediation steps.
+7. **History & before/after** — every scan is saved automatically (local JSON, per target). Pick two past scans of the same target in the dashboard to see exactly what got resolved, what's new, and what's still open since the last run.
+
+### Architecture
 
 ```
-py -3 -m pip install -r requirements.txt
-py -3 -m playwright install chromium
+config.py     Config dataclass — env/API key loading, safety defaults (confirm-scope gate,
+              safe-HTTP-method allowlist), output paths
+recon.py      Playwright crawler — pages/forms/headers/cookies/scripts/chatbot fingerprinting
+ai_brain.py   Claude wrapper — hypothesize() → generate_payloads() → analyze_response(),
+              JSON-only responses enforced with retry + truncation recovery, safety-pinned
+              system prompt (no destructive/DoS/exfil payloads, no unsafe methods, LLM probes
+              stay read-only)
+scanner.py    Orchestrates recon → hypotheses → payloads → probes → verdicts; also runs the
+              free deterministic header checks
+reporter.py   Markdown/HTML report generation — grading, grouping, dark-mode styling
+history.py    Saves every scan (JSON) and diffs two scans by issue type for before/after
+runner.py     Shared pipeline (recon → scan → report → save) used by both front-ends
+cli.py        Typer CLI — flag-driven or a fully interactive prompt flow with an ASCII banner
+app.py        Streamlit dashboard — scan-intensity presets, live progress, grade badge,
+              one-click export (zip), history/before-after comparison
+test_smoke.py Runnable self-check (no network/API calls) — asserted after every change
 ```
 
-Create a `.env` file (or set env vars directly):
+### Project stats
 
+| | |
+|---|---|
+| Python source | **~1,250 lines** across 10 files |
+| Automated self-checks | **9 smoke tests**, run after every change, no mocking of the logic under test |
+| Front-ends | 2 (interactive/flag-driven CLI, Streamlit dashboard) — one shared pipeline, no duplicated orchestration logic |
+| Dependencies | 7 (`anthropic`, `playwright`, `httpx`, `typer`, `rich`, `pyfiglet`, `streamlit`) — everything else is Python stdlib |
+| Real-world validation | Run against multiple live, real websites during development (not just synthetic test pages) — surfaced and fixed genuine crawl/AI-integration bugs, not just unit-test-shaped ones |
+
+### Real bugs found & fixed during development
+
+This wasn't built and shipped untested — every one of these was caught by actually running the tool against real sites, not just reasoning about the code:
+
+- **Crawl false-negatives on real sites**: `page.goto(..., wait_until="networkidle")` never resolves on sites with analytics/polling/chat-widget traffic (a *majority* of real sites) — the crawler reported "0 pages" on a perfectly healthy site. Fixed: `domcontentloaded` is now the real wait condition; `networkidle` is only a short best-effort settle window afterward that can't fail the page load.
+- **A crash on failed recon**: if the crawl genuinely found nothing, the tool still asked Claude to hypothesize attacks from an empty summary — Claude's reply got cut off mid-JSON (token budget too small for a full 12-hypothesis list) and the whole scan crashed with an unhandled parse error. Fixed at the root: AI probing is now skipped entirely when recon collected zero pages, and the JSON-parsing layer independently detects a token-limit cutoff and retries with more room + a "be terse" instruction, instead of a correction message that can't fix a truncation.
+- **False-positive noise from third-party origins**: header checks were flagging Google Fonts / CDN / analytics-beacon responses as if they were the *scanned site's* misconfiguration — headers on a domain you don't own aren't yours to fix. Fixed: header checks now run only against the target's own origin.
+- **Before/after comparisons could silently swap**: two scans saved within the same second sorted by a random tie-breaker instead of save order, which could flip which scan was "before" and which was "after" with no indication anything was wrong. Fixed: scan filenames now carry microsecond-resolution timestamps.
+- **UTC timestamps read as "wrong"** to a reader in a different timezone (a report generated at 23:24 UTC looks like it's from "yesterday" to someone 3 hours ahead). Fixed: reports and history now show local wall-clock time with its UTC offset.
+- **History mixing unrelated targets**: once more than one site had been scanned, the before/after picker mixed every site's scans into one list with no way to tell them apart. Fixed: the dashboard's history section now has its own target selector, independent of the "start a new scan" field.
+
+### Example scan output
+
+A real run of the CLI against `example.com` (a safe, well-known placeholder domain — chosen here specifically so this README doesn't publish anyone's real infrastructure findings):
+
+```
+Overall Grade: B — Only low-severity hygiene issues found, solid baseline posture.
+Severity breakdown: Low=4
+
+[Low] Missing Security Header — No Content-Security-Policy header (CVSS 3.1)
+[Low] Missing Security Header — No X-Frame-Options header (CVSS 3.1)
+[Low] Missing Security Header — No HSTS header (CVSS 3.1)
+[Low] Missing Security Header — No X-Content-Type-Options header (CVSS 3.1)
+```
+
+No exploitable vulnerabilities — the Claude-driven probes ran and returned no verified findings above these header gaps. This is the expected shape of output for a well-run, low-attack-surface site: a short, honest, non-inflated list, not 50 duplicate rows for the same issue.
+
+### Install & run
+
+```bash
+pip install -r requirements.txt
+playwright install chromium
+```
+
+`.env` (see `.env.example`):
 ```
 ANTHROPIC_API_KEY=sk-ant-...
 ANTHROPIC_MODEL=claude-sonnet-5   # optional, this is the default
 ```
 
-## Run
+```bash
+# Interactive terminal
+python cli.py
 
-```
-py -3 cli.py scan --target https://your-authorized-target.com --confirm-scope
-```
+# Flag-driven
+python cli.py --target https://your-authorized-target.com --confirm-scope
 
-`--confirm-scope` is mandatory — the tool refuses to run without it. It is your
-attestation that you have permission to test the target.
-
-Useful flags:
-- `--depth 3` crawl depth (default 2)
-- `--no-ai-checks` skip Claude, run only the deterministic header checks
-- `--max-concurrency`, `--rate-limit` throttle outbound requests (default 5 / 3 rps)
-- `--allow-unsafe-methods` opt in to PUT/DELETE/PATCH probing (off by default)
-- `--output-dir` where reports land (default `./cogniscan-reports`)
-
-Reports: `cogniscan-reports/report.md` and `report.html` (latest run — overwritten each
-scan). Every run is also archived to `cogniscan-reports/history/*.json`, so past scans
-survive and can be diffed — see the History section in the dashboard.
-
-## Web dashboard
-
-```
-py -3 -m streamlit run app.py
+# Web dashboard
+streamlit run app.py
 ```
 
-Same config as the CLI, plus: overall grade badge, one-click "Export All" (zip of
-md+html+csv), and a **History & Before/After** panel — pick two past scans of the same
-target (e.g. one before a fix, one after) to see what got resolved, what's new, and
-what's still open.
+Useful flags: `--depth`, `--no-ai-checks` (header checks only, free/instant), `--max-concurrency`, `--rate-limit`, `--allow-unsafe-methods` (off by default), `--output-dir`.
 
-## Deploying the dashboard
+### Safety design
 
-The scanner fires live requests at whatever URL you give it and burns your Anthropic
-API key per scan — **do not deploy it to Streamlit Community Cloud**, that tier is public
-with no auth in front, so anyone who finds the URL can point it at any site on your key.
-Options, in order:
-- **Self-host** ("Other platforms"): run it on your own VM behind a reverse proxy with
-  basic auth or an SSO gate (Cloudflare Access, nginx `auth_basic`, Tailscale). This is
-  the right fit for a single-operator pentest tool.
-- **Local only**: `streamlit run app.py` on your machine — no deployment needed if you're
-  the only user.
-- Snowflake's offering is for enterprise data-stack integration, not relevant here.
+- `--confirm-scope` (CLI) / the authorization checkbox (dashboard) is a hard gate in `Config` — no flag or checkbox, no run.
+- The `GET`/`POST`/`HEAD`/`OPTIONS` method allowlist is enforced independently of anything Claude suggests — a bad model output can never fire a live `DELETE`.
+- Every Claude call is pinned by a system prompt banning destructive/DoS/data-exfiltration payloads; LLM-widget tests only probe and read behavior (prompt injection, system-prompt leakage) — they never instruct a live system to take a real destructive action.
 
-## Self-check
+---
+
+## العربية
+
+### وش تسوي الأداة
+
+1. **الاستكشاف (Recon)** — تزحف على الموقع المستهدف بعمق قابل للتحكم عبر Playwright، وتجمع الصفحات، الفورمز والمعاملات، الكوكيز، هيدرز الاستجابة، السكربتات الخارجية، وأي مؤشرات على شات بوت/AI widget مدمج.
+2. **فرضيات الهجوم بالذكاء الاصطناعي** — ملخص الاستكشاف يروح لـ Claude، اللي يقترح حتى 12 فرضية هجوم تغطي OWASP Top 10، مشاكل منطق الأعمال (IDOR، race conditions، تجاوز تدفق العمل)، ولو فيه شات بوت — OWASP Top 10 الخاصة بتطبيقات الـ LLM (حقن الأوامر، تسريب System Prompt، Jailbreak، SSRF عبر استدعاء الأدوات، الإفصاح الزائد).
+3. **فحص آمن** — Claude يولّد payloads غير مدمّرة لكل فرضية (تعتمد على الانعكاس/التوقيت/علامات غير ضارة، أبدًا تعديل بيانات)، تُرسل عبر `httpx` بتحكم بالتوازي ومعدل الطلبات، ومحصورة بـ `GET`/`POST`/`HEAD`/`OPTIONS` إلا لو فعّلت الطرق الخطرة صراحة.
+4. **التحليل** — كل رد يرجع لـ Claude يحدد: فيه ثغرة فعلية أو لا، الخطورة، CVSS، الدليل، طريقة الإصلاح.
+5. **فحوصات ثابتة بدون AI** — هيدرز الأمان الناقصة (CSP، X-Frame-Options، HSTS، X-Content-Type-Options) تُفحص بدون أي استدعاء لنموذج، وبس على نطاق الموقع المستهدف نفسه (مواقع CDN/الخطوط/التحليلات الخارجية ما تُحسب كمشكلة بموقعك).
+6. **التقارير** — Markdown + تقرير HTML متكامل (Dark mode): درجة إجمالية (A-F) مبنية على أسوأ خطورة موجودة (مو المعدل)، والمشاكل مجمّعة (مشكلة وحدة لكل نوع بدل ما تتكرر لكل رابط لحاله).
+7. **السجل والمقارنة قبل/بعد** — كل فحص ينحفظ تلقائيًا. تختار فحصين سابقين لنفس الموقع من الداشبورد وتشوف بالضبط وش انصلح، وش جديد، ووش لسا موجود.
+
+### إحصائيات المشروع
+
+| | |
+|---|---|
+| كود Python | **~1,250 سطر** موزعة على 10 ملفات |
+| اختبارات آلية | **9 اختبارات** تشتغل بعد كل تعديل |
+| واجهات المستخدم | 2 (CLI تفاعلي/بأوامر، وداشبورد Streamlit) — نفس المحرك بالضبط، بدون تكرار منطق |
+| المكتبات المستخدمة | 7 فقط، الباقي كله من مكتبة بايثون القياسية |
+| اختبار حقيقي | شُغّلت الأداة فعليًا ضد مواقع حقيقية أثناء التطوير (مو بس بيانات تجريبية) — وطلعت أخطاء حقيقية انصلحت، مو بس أخطاء نظرية |
+
+### أخطاء حقيقية لقيتها وصلحتها أثناء التطوير
+
+الأداة ما بُنيت وطُلعت بدون اختبار — كل وحدة من هذي اكتُشفت بتشغيل الأداة فعليًا على مواقع حقيقية:
+
+- **فشل الزحف على مواقع سليمة**: انتظار `networkidle` ما يخلص أبدًا على مواقع فيها تحليلات/شات بوت (أغلب المواقع الحقيقية) — كانت الأداة تقول "0 صفحات" على موقع شغّال تمام. الحل: صار الانتظار الأساسي على `domcontentloaded`، و`networkidle` بعده محاولة قصيرة ما تفشّل تحميل الصفحة لو ما نجحت.
+- **كراش عند فشل الاستكشاف**: لو الزحف ما لقى شي فعلاً، كانت الأداة لسا ترسل لـ Claude تسويه يخترع فرضيات من لا شي — رده ينقطع نص الـ JSON، والفحص كامل يكراش. الحل من الجذر: تخطي استدعاء الذكاء الاصطناعي كليًا لو الاستكشاف ما جاب ولا صفحة، مع تحسين إضافي يكتشف الانقطاع بسبب حد الكلمات ويعيد المحاولة بمساحة أكبر.
+- **إزعاج كاذب من نطاقات خارجية**: كانت تحط findings على خطوط قوقل أو CDN كأنها مشكلة الموقع المستهدف — أنت ما تتحكم بهيدرز نطاق مو نطاقك. الحل: الفحص الحين بس على نطاق الهدف نفسه.
+- **مقارنة قبل/بعد ممكن تنعكس بصمت**: فحصين بنفس الثانية كانوا يترتبون عشوائي بدل ترتيب الحفظ الفعلي. الحل: دقة الوقت بالميكروثانية.
+- **توقيت UTC كان يبين "غلط"** لقارئ بمنطقة زمنية ثانية. الحل: التقارير والسجل الحين بالتوقيت المحلي.
+- **السجل كان يخلط بين مواقع مختلفة**: صار فيه قائمة اختيار مستقلة بقسم السجل تحدد الموقع أول قبل المقارنة.
+
+### مثال ناتج فحص حقيقي
+
+فحص فعلي ضد `example.com` (نطاق آمن ومعروف عالميًا — اخترته بالذات عشان هذا الملف ما ينشر بيانات موقع حقيقي لأي أحد):
 
 ```
-py -3 test_smoke.py
+الدرجة الإجمالية: B — مشاكل نظافة بسيطة بس، وضع أساسي جيد.
+تصنيف الخطورة: منخفض=4
+
+[منخفض] هيدر أمان ناقص — لا يوجد Content-Security-Policy (CVSS 3.1)
+[منخفض] هيدر أمان ناقص — لا يوجد X-Frame-Options (CVSS 3.1)
+[منخفض] هيدر أمان ناقص — لا يوجد HSTS (CVSS 3.1)
+[منخفض] هيدر أمان ناقص — لا يوجد X-Content-Type-Options (CVSS 3.1)
 ```
 
-## How it works
+ولا ثغرة قابلة للاستغلال — فحوصات Claude اشتغلت وما لقت شي فوق هالهيدرز الناقصة. هذا الشكل المتوقع لموقع سطح هجومه صغير ومُدار كويس: قائمة قصيرة وصادقة، مو 50 سطر مكرر لنفس المشكلة.
 
-1. `recon.py` — Playwright crawls same-origin pages up to `--depth`, collecting
-   forms/params/scripts/cookies/response headers, and fingerprints embedded
-   chat/AI widgets (Intercom, Drift, custom `gpt`/`assistant`-named bundles, etc).
-2. `ai_brain.py` — sends the recon summary to Claude, which proposes attack
-   hypotheses (OWASP Top 10 + business logic + OWASP LLM Top 10 when a chat
-   widget was found), generates non-destructive payloads per hypothesis, and
-   analyzes each probe's response to render a verdict + severity + CVSS.
-3. `scanner.py` — fires the payloads over `httpx` with concurrency + rate
-   limiting, restricted to GET/POST/HEAD/OPTIONS unless unsafe methods are
-   explicitly allowed. Also runs cheap deterministic checks (missing security
-   headers) without any model call.
-4. `reporter.py` — renders findings into Markdown and a self-contained HTML
-   report: posture summary, weaknesses, verified vulnerabilities w/ PoC, and
-   remediation steps.
+### التثبيت والتشغيل
 
-## Safety notes
+```bash
+pip install -r requirements.txt
+playwright install chromium
+```
 
-- Every Claude prompt is pinned with rules against destructive/DoS/exfiltration
-  payloads and against escalating to unsafe HTTP methods.
-- The scanner enforces the method allowlist independently of what the model
-  returns — a model mistake can't send a live DELETE.
-- LLM-specific tests only *probe and read* chatbot behavior (prompt injection,
-  system-prompt leakage) — they don't instruct any live system to act.
+ملف `.env` (شوف `.env.example`):
+```
+ANTHROPIC_API_KEY=sk-ant-...
+ANTHROPIC_MODEL=claude-sonnet-5   # اختياري، هذا الافتراضي
+```
+
+```bash
+# طرفية تفاعلية
+python cli.py
+
+# بأوامر مباشرة
+python cli.py --target https://your-authorized-target.com --confirm-scope
+
+# داشبورد ويب
+streamlit run app.py
+```
+
+### تصميم السلامة
+
+- `--confirm-scope` (بالطرفية) / صندوق تأكيد الصلاحية (بالداشبورد) بوابة صارمة داخل `Config` — بدون تفعيلها الفحص ما يشتغل إطلاقًا.
+- قائمة الطرق المسموحة (`GET`/`POST`/`HEAD`/`OPTIONS`) مفروضة بالكود بشكل مستقل عن أي اقتراح من Claude — حتى لو النموذج غلط، ما يقدر يرسل `DELETE` حقيقي.
+- كل استدعاء لـ Claude مقيّد بقواعد صريحة تمنع أي payload مدمّر أو DoS أو تسريب بيانات؛ فحوصات الـ LLM widgets تراقب وتقرأ السلوك بس (حقن أوامر، تسريب System Prompt) — أبدًا ما توجّه نظام حي يسوي فعل ضار حقيقي.
