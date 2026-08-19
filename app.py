@@ -178,37 +178,48 @@ else:
 
 st.divider()
 st.subheader("📊 Scan History & Before/After")
-scans = list_scans(HISTORY_DIR, target or None)
-if len(scans) < 2:
+all_scans = list_scans(HISTORY_DIR)
+all_targets = sorted({load_scan(p)["target"] for p in all_scans})
+
+if not all_targets:
     st.caption("Every scan is saved automatically. Run at least two scans of the same target "
                "(e.g. one before fixing an issue, one after) to compare them here.")
 else:
-    labels = {}
-    for p in scans:
-        data = load_scan(p)
-        short_id = p.stem.split("_", 2)[1]  # disambiguates two scans saved in the same second
-        labels[f"{_fmt_ts(data['timestamp'])} — Grade {data['grade']} ({short_id})"] = p
-    options = list(labels.keys())
-    c1, c2 = st.columns(2)
-    before_label = c1.selectbox("Before", options, index=0)
-    after_label = c2.selectbox("After", options, index=len(options) - 1)
-    if st.button("Compare"):
-        before = load_scan(labels[before_label])
-        after = load_scan(labels[after_label])
-        diff = diff_scans(before, after)
+    # A separate picker from the sidebar's "Target URL" field — history can hold scans of
+    # several different sites, and mixing them in one Before/After list would be meaningless.
+    default_idx = all_targets.index(target) if target in all_targets else 0
+    hist_target = st.selectbox("Target to browse history for", all_targets, index=default_idx)
+    scans = list_scans(HISTORY_DIR, hist_target)
 
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Grade", f"{diff['grade_before']} → {diff['grade_after']}")
-        m2.metric("Resolved issue types", len(diff["resolved"]))
-        m3.metric("New issue types", len(diff["new"]))
-        m4.metric("Still present", len(diff["persisting"]))
+    if len(scans) < 2:
+        st.caption(f"Only one saved scan for {hist_target} so far — run it again after a change to compare.")
+    else:
+        labels = {}
+        for p in scans:
+            data = load_scan(p)
+            short_id = p.stem.split("_", 2)[1]  # disambiguates two scans saved in the same second
+            labels[f"{_fmt_ts(data['timestamp'])} — Grade {data['grade']} ({short_id})"] = p
+        options = list(labels.keys())
+        c1, c2 = st.columns(2)
+        before_label = c1.selectbox("Before", options, index=0)
+        after_label = c2.selectbox("After", options, index=len(options) - 1)
+        if st.button("Compare"):
+            before = load_scan(labels[before_label])
+            after = load_scan(labels[after_label])
+            diff = diff_scans(before, after)
 
-        if diff["resolved"]:
-            st.success("✅ Resolved since 'Before':")
-            st.dataframe(diff["resolved"], use_container_width=True)
-        if diff["new"]:
-            st.error("🆕 New since 'Before':")
-            st.dataframe(diff["new"], use_container_width=True)
-        if diff["persisting"]:
-            st.warning("⏳ Still open:")
-            st.dataframe(diff["persisting"], use_container_width=True)
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Grade", f"{diff['grade_before']} → {diff['grade_after']}")
+            m2.metric("Resolved issue types", len(diff["resolved"]))
+            m3.metric("New issue types", len(diff["new"]))
+            m4.metric("Still present", len(diff["persisting"]))
+
+            if diff["resolved"]:
+                st.success("✅ Resolved since 'Before':")
+                st.dataframe(diff["resolved"], use_container_width=True)
+            if diff["new"]:
+                st.error("🆕 New since 'Before':")
+                st.dataframe(diff["new"], use_container_width=True)
+            if diff["persisting"]:
+                st.warning("⏳ Still open:")
+                st.dataframe(diff["persisting"], use_container_width=True)
